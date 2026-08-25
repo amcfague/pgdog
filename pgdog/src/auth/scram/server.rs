@@ -151,20 +151,25 @@ impl Server {
         };
 
         // SASLInitialResponse / client-first phase.
-        let client_response = match Self::read_password(stream).await? {
-            Some(Password::SASLInitialResponse { response, .. }) => response,
-            Some(_) => return Ok(false),
+        let password = match Self::read_password(stream).await? {
+            Some(password) => password,
             None => return Ok(false),
         };
+        let client_response = password
+            .sasl_initial_response()?
+            .response
+            .ok_or(crate::net::Error::UnexpectedPayload)?;
+        let client_response =
+            std::str::from_utf8(client_response).map_err(crate::net::Error::from)?;
 
         let (scram_final, reply) = match &scram {
             Scram::Plain(plain) => {
-                let server = plain.handle_client_first(&client_response)?;
+                let server = plain.handle_client_first(client_response)?;
                 let (client, reply) = server.server_first();
                 (ScramFinal::Plain(client), reply)
             }
             Scram::Hashed(hashed) => {
-                let server = hashed.handle_client_first(&client_response)?;
+                let server = hashed.handle_client_first(client_response)?;
                 let (client, reply) = server.server_first();
                 (ScramFinal::Hashed(client), reply)
             }
@@ -175,15 +180,15 @@ impl Server {
             .await?;
 
         // Client-final phase.
-        let response = match Self::read_password(stream).await? {
-            Some(Password::PasswordMessage { response }) => response,
-            Some(_) => return Ok(false),
+        let password = match Self::read_password(stream).await? {
+            Some(password) => password,
             None => return Ok(false),
         };
+        let response = password.parse_sasl_response()?;
 
         let server_final = match scram_final {
-            ScramFinal::Plain(plain) => plain.handle_client_final(&response)?,
-            ScramFinal::Hashed(hashed) => hashed.handle_client_final(&response)?,
+            ScramFinal::Plain(plain) => plain.handle_client_final(response)?,
+            ScramFinal::Hashed(hashed) => hashed.handle_client_final(response)?,
         };
 
         let (status, reply) = server_final.server_final();

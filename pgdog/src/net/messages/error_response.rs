@@ -56,6 +56,19 @@ impl ErrorResponse {
         }
     }
 
+    /// OAuth authentication error with no credential or policy details.
+    pub fn oauth() -> ErrorResponse {
+        ErrorResponse {
+            severity: "FATAL".into(),
+            code: "28000".into(),
+            message: "OAuth authentication failed".into(),
+            detail: None,
+            context: None,
+            file: None,
+            routine: None,
+        }
+    }
+
     pub fn client_login_timeout(timeout: Duration) -> ErrorResponse {
         let mut error = Self::client_idle_timeout(timeout, &State::Active);
         error.message = "client login timeout".into();

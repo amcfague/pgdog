@@ -158,6 +158,7 @@ impl MemoryUsage for Message {
 impl std::fmt::Debug for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.code() {
+            'p' => f.debug_struct("Password").field("redacted", &true).finish(),
             'Q' => Query::from_bytes(self.payload()).unwrap().fmt(f),
             'D' => match self.source {
                 Source::Frontend => Describe::from_bytes(self.payload()).unwrap().fmt(f),

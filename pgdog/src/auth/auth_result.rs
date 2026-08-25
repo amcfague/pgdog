@@ -19,8 +19,6 @@ pub enum AuthResult {
     NoPassthroughPasswordChange,
     /// No user or database in config.
     NoUserOrDatabase,
-    /// Client didn't provide password message.
-    NoPasswordMessage,
 }
 
 impl AuthResult {
@@ -53,7 +51,6 @@ impl Display for AuthResult {
                 write!(f, "passthrough auth does not allow password change")
             }
             Self::NoUserOrDatabase => write!(f, "no user or database in config"),
-            Self::NoPasswordMessage => write!(f, "client did not send password message"),
         }
     }
 }

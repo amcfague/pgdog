@@ -31,6 +31,11 @@ impl Authentication {
     pub fn scram() -> Authentication {
         Authentication::Sasl("SCRAM-SHA-256".to_string())
     }
+
+    /// Request OAuth 2.0 bearer authentication.
+    pub fn oauth() -> Authentication {
+        Authentication::Sasl("OAUTHBEARER".to_string())
+    }
 }
 
 impl FromBytes for Authentication {
@@ -124,5 +129,19 @@ impl ToBytes for Authentication {
                 payload.freeze()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oauth_advertises_one_null_terminated_mechanism() {
+        let bytes = Authentication::oauth().to_bytes();
+        assert!(bytes.ends_with(b"OAUTHBEARER\0\0"));
+
+        let parsed = Authentication::from_bytes(bytes).unwrap();
+        assert!(matches!(parsed, Authentication::Sasl(name) if name == "OAUTHBEARER"));
     }
 }

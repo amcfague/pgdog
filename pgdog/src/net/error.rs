@@ -118,6 +118,9 @@ pub enum Error {
     #[error("message size {size} bytes exceeds query_size_limit of {limit} bytes")]
     MessageTooLarge { size: usize, limit: usize },
 
+    #[error("message frame size {size} bytes exceeds limit of {limit} bytes")]
+    MessageFrameTooLarge { size: usize, limit: usize },
+
     /// The length field counts itself, so it can never be below 4. A message
     /// declaring less than that can't be framed, and the peer is out of sync.
     #[error("malformed message: declared length {0} is below the minimum of 4 bytes")]
@@ -139,6 +142,11 @@ impl Error {
                     len
                 )),
             ),
+            Self::MessageFrameTooLarge { size, limit } => {
+                Some(super::messages::ErrorResponse::protocol_violation(
+                    &format!("message frame size {size} bytes exceeds limit of {limit} bytes"),
+                ))
+            }
             _ => None,
         }
     }

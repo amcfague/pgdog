@@ -282,8 +282,22 @@ impl Stream {
         self.read_buf(&mut buf).await
     }
 
+    /// Read one message, rejecting its declared length before allocating its body.
+    pub async fn read_bounded(&mut self, max_len: usize) -> Result<Message, crate::net::Error> {
+        let mut buf = BytesMut::with_capacity(5);
+        self.read_buf_with_limit(&mut buf, Some(max_len)).await
+    }
+
     /// Read data into a buffer, avoiding unnecessary allocations.
     pub async fn read_buf(&mut self, bytes: &mut BytesMut) -> Result<Message, crate::net::Error> {
+        self.read_buf_with_limit(bytes, None).await
+    }
+
+    async fn read_buf_with_limit(
+        &mut self,
+        bytes: &mut BytesMut,
+        max_len: Option<usize>,
+    ) -> Result<Message, crate::net::Error> {
         let result = async {
             let code = eof(self.read_u8().await)?;
             self.io_in_progress = true;
@@ -291,12 +305,18 @@ impl Stream {
             let len = eof(self.read_i32().await)?;
             bytes.put_i32(len);
 
-            // Length must be at least 4 bytes.
             if len < 4 {
-                return Err(crate::net::Error::UnexpectedEof);
+                return Err(crate::net::Error::MalformedMessageLength(len));
             }
 
-            let capacity = len as usize + 1;
+            let len = len as usize;
+            if let Some(limit) = max_len
+                && len > limit
+            {
+                return Err(crate::net::Error::MessageFrameTooLarge { size: len, limit });
+            }
+
+            let capacity = len + 1;
             bytes.reserve(capacity); // self + 1 byte for the message code
             unsafe {
                 // SAFETY: We reserved the memory above, so it's there.
@@ -451,6 +471,43 @@ mod tests {
         let (ours, _) = listener.accept().await.unwrap();
 
         (Stream::plain(ours, 4096), peer.await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn test_bounded_read_rejects_length_before_reading_body() {
+        let (mut stream, mut peer) = connected_pair().await;
+        peer.write_all(b"p\0\x02\0\x01").await.unwrap();
+        peer.flush().await.unwrap();
+
+        let error = tokio::time::timeout(Duration::from_secs(1), stream.read_bounded(128 * 1024))
+            .await
+            .expect("bounded read waited for the oversized body")
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::net::Error::MessageFrameTooLarge {
+                size: 131_073,
+                limit: 131_072,
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_read_rejects_negative_length_before_reading_body() {
+        let (mut stream, mut peer) = connected_pair().await;
+        peer.write_all(b"p\xff\xff\xff\xff").await.unwrap();
+        peer.flush().await.unwrap();
+
+        let error = tokio::time::timeout(Duration::from_secs(1), stream.read())
+            .await
+            .expect("read waited for a malformed body")
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::net::Error::MalformedMessageLength(-1)
+        ));
     }
 
     #[tokio::test]

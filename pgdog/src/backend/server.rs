@@ -345,9 +345,7 @@ impl Server {
                         }
                         Authentication::SaslContinue(data) => {
                             scram.server_first(&data)?;
-                            let response = Password::PasswordMessage {
-                                response: scram.last()?,
-                            };
+                            let response = Password::sasl_response(scram.last()?);
                             stream.send_flush(&response).await?;
                         }
                         Authentication::SaslFinal(data) => {

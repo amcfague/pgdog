@@ -191,14 +191,10 @@ impl Client {
                 );
                 stream.send_flush(&md5.challenge()).await?;
                 let password = Password::from_bytes(stream.read().await?.to_bytes())?;
-                if let Password::PasswordMessage { response } = password {
-                    if md5.check(&response) {
-                        AuthResult::Ok
-                    } else {
-                        AuthResult::NoPasswordMatch
-                    }
+                if md5.check(password.parse_password()?) {
+                    AuthResult::Ok
                 } else {
-                    AuthResult::NoPasswordMessage
+                    AuthResult::NoPasswordMatch
                 }
             }
 
@@ -220,10 +216,9 @@ impl Client {
                     .await?;
                 let response = stream.read().await?;
                 let response = Password::from_bytes(response.to_bytes())?;
-                let is_match = response.password().is_some_and(|provided| {
-                    passwords.iter().any(|p| {
-                        crate::util::constant_time_eq(p.as_str().as_bytes(), provided.as_bytes())
-                    })
+                let provided = response.parse_password()?;
+                let is_match = passwords.iter().any(|password| {
+                    crate::util::constant_time_eq(password.as_str().as_bytes(), provided.as_bytes())
                 });
 
                 if is_match {
