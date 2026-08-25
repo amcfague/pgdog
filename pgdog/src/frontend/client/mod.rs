@@ -234,6 +234,8 @@ impl Client {
             }
 
             AuthType::Trust => AuthResult::Ok,
+            // U4 replaces this fail-closed placeholder with the OAuth exchange.
+            AuthType::OAuth => AuthResult::NoPasswordMatch,
         };
 
         Ok(result)

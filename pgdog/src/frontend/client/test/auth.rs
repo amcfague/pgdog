@@ -1,11 +1,14 @@
 //! Client authentication tests.
 
-use pgdog_config::{AuthType, PassthroughAuth};
+use pgdog_config::{AuthType, PassthroughAuth, users::PasswordKind};
+use tokio::net::{TcpListener, TcpStream};
 
 use crate::{
+    auth::AuthResult,
     config::{config, set},
     expect_message,
-    net::{Authentication, ErrorResponse, Parameters, Password},
+    frontend::Client,
+    net::{Authentication, ErrorResponse, Parameters, Password, Stream},
 };
 
 use super::SpawnedClient;
@@ -32,6 +35,27 @@ async fn login_admin(password: &str) -> SpawnedClient {
 /// Admin connections must be authenticated against the admin password even
 /// when passthrough auth is enabled. Regression test for the passthrough
 /// branch running first and accepting any password for the admin database.
+#[tokio::test]
+async fn test_oauth_password_branch_fails_closed() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let client = tokio::spawn(TcpStream::connect(addr));
+    let (server, _) = listener.accept().await.unwrap();
+    let _client = client.await.unwrap().unwrap();
+    let mut stream = Stream::plain(server, 4096);
+
+    let result = Client::check_password(
+        &mut stream,
+        "alice",
+        &AuthType::OAuth,
+        &[PasswordKind::Plain("ignored".into())],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result, AuthResult::NoPasswordMatch);
+}
+
 #[tokio::test]
 async fn test_admin_password_checked_with_passthrough_auth() {
     crate::logger();

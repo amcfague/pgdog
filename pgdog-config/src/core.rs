@@ -9,9 +9,9 @@ use tracing::{error, info, warn};
 use crate::sharding::ShardedSchema;
 use crate::util::random_string;
 use crate::{
-    EnumeratedDatabase, Memory, OmnishardedTable, PassthroughAuth, PreparedStatements, QueryParser,
-    QueryParserEngine, QueryParserLevel, ReadWriteSplit, RewriteMode, Role, ShardedMappingKey,
-    ShardedTableConfig, SystemCatalogsBehavior, system_catalogs,
+    AuthType, EnumeratedDatabase, Memory, OmnishardedTable, PassthroughAuth, PreparedStatements,
+    QueryParser, QueryParserEngine, QueryParserLevel, ReadWriteSplit, RewriteMode, Role,
+    ShardedMappingKey, ShardedTableConfig, SystemCatalogsBehavior, system_catalogs,
 };
 
 use super::database::Database;
@@ -120,7 +120,20 @@ impl ConfigAndUsers {
         self.config.check();
         self.users.check(&self.config);
         self.validate_server_auth()?;
+        self.validate_oauth()?;
         Ok(())
+    }
+
+    fn validate_oauth(&self) -> Result<(), Error> {
+        if self.config.general.auth_type != AuthType::OAuth {
+            return Ok(());
+        }
+
+        self.config
+            .oauth
+            .as_ref()
+            .ok_or_else(|| Error::ParseError("[oauth] is required when auth_type is oauth".into()))?
+            .validate(&self.config.general)
     }
 
     fn validate_server_auth(&self) -> Result<(), Error> {
@@ -288,6 +301,9 @@ pub struct Config {
 
     /// HashiCorp Vault settings, required for users configured with `server_auth = "vault"`.
     pub vault: Option<Vault>,
+
+    /// OAuth client authentication settings.
+    pub oauth: Option<crate::OAuth>,
 
     /// Query parser levels per-database.
     #[serde(default)]

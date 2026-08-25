@@ -27,6 +27,8 @@ pub use pgdog_config::auth::AuthType;
 #[cfg(test)]
 pub(crate) use pgdog_config::auth::PassthroughAuth;
 pub use pgdog_config::{LoadBalancingStrategy, ReadWriteSplit, ReadWriteStrategy};
+#[allow(unused_imports)]
+pub use pgdog_config::{OAuth, OAuthMode};
 pub use pooling::{ConnectionRecovery, PoolerMode, PreparedStatements};
 pub use rewrite::RewriteMode;
 use std::path::Path;

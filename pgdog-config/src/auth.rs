@@ -49,6 +49,8 @@ pub enum AuthType {
     Trust,
     /// Plaintext password.
     Plain,
+    /// OAuth 2.0 bearer token authentication.
+    OAuth,
 }
 
 impl Display for AuthType {
@@ -58,6 +60,7 @@ impl Display for AuthType {
             Self::Scram => write!(f, "scram"),
             Self::Trust => write!(f, "trust"),
             Self::Plain => write!(f, "plain"),
+            Self::OAuth => write!(f, "oauth"),
         }
     }
 }
@@ -85,6 +88,7 @@ impl FromStr for AuthType {
             "scram" => Ok(Self::Scram),
             "trust" => Ok(Self::Trust),
             "plain" => Ok(Self::Plain),
+            "oauth" => Ok(Self::OAuth),
             _ => Err(format!("Invalid auth type: {}", s)),
         }
     }
