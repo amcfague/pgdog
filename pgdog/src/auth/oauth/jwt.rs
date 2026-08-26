@@ -107,9 +107,11 @@ fn select_key<'a>(keys: &'a JwkSet, header: &Header) -> Result<&'a Jwk, Error> {
             .key_operations
             .as_ref()
             .is_some_and(|operations| !operations.contains(&KeyOperations::Verify))
-        || key.common.key_algorithm.is_some_and(|key_algorithm| {
-            Algorithm::try_from(key_algorithm).ok() != Some(header.alg)
-        })
+        || key
+            .common
+            .key_algorithm
+            .and_then(|key_algorithm| Algorithm::try_from(key_algorithm).ok())
+            != Some(header.alg)
         || !compatible_parameters(header.alg, &key.algorithm)
     {
         return Err(Error::InvalidResponse);

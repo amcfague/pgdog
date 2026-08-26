@@ -23,7 +23,8 @@ fi
 # The protocol_version and OAuth smoke tests need PostgreSQL 18's psql,
 # libpq headers, and OAuth hook API. pg_wrapper picks the highest installed
 # major, so /usr/bin/psql and pg_config will resolve to 18.
-if ! dpkg -s postgresql-client-18 postgresql-server-dev-18 >/dev/null 2>&1; then
+if ! dpkg -s postgresql-client-18 postgresql-server-dev-18 libpq-dev >/dev/null 2>&1 \
+    || ! pg_config --version 2>/dev/null | grep -q '^PostgreSQL 18\.'; then
     sudo install -d /usr/share/postgresql-common/pgdg
     sudo curl -fsSLo /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
         https://www.postgresql.org/media/keys/ACCC4CF8.asc
@@ -31,7 +32,8 @@ if ! dpkg -s postgresql-client-18 postgresql-server-dev-18 >/dev/null 2>&1; then
     echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
         | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
     sudo apt-get update
-    sudo apt-get install -y --no-install-recommends postgresql-client-18 postgresql-server-dev-18
+    sudo apt-get install -y --no-install-recommends \
+        postgresql-client-18 postgresql-server-dev-18 libpq-dev
 fi
 
 # Kitware prebuilt cmake pinned to the version pgdog expects. Much faster

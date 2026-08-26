@@ -343,6 +343,13 @@ fn jwt_rejects_invalid_claims_and_key_metadata() {
         Err(Error::InvalidResponse)
     ));
 
+    let mut missing_algorithm = keys.clone();
+    missing_algorithm.keys[0].common.key_algorithm = None;
+    assert!(matches!(
+        jwt::validate_with_keys(&valid, "alice", &config, &missing_algorithm),
+        Err(Error::InvalidResponse)
+    ));
+
     let mut duplicate_key = keys.clone();
     duplicate_key.keys.push(duplicate_key.keys[0].clone());
     assert!(matches!(
