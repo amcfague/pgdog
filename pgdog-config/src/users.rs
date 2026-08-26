@@ -7,8 +7,8 @@ use tracing::warn;
 
 use super::core::Config;
 use super::pooling::PoolerMode;
-use crate::RoleConfig;
 use crate::util::random_string;
+use crate::{AuthType, RoleConfig};
 use schemars::JsonSchema;
 
 /// Plugins are dynamically loaded at PgDog startup. These settings control which plugins are loaded.
@@ -51,7 +51,10 @@ impl Users {
     pub fn check(&mut self, config: &Config) {
         for user in &mut self.users {
             if user.passwords().is_empty() {
-                if !config.general.passthrough_auth() && user.identity.is_none() {
+                if config.general.auth_type != AuthType::OAuth
+                    && !config.general.passthrough_auth()
+                    && user.identity.is_none()
+                {
                     warn!(
                         r#"user "{}" (database "{}") doesn't have a password, passthrough auth and mTLS are disabled"#,
                         user.name, user.database,

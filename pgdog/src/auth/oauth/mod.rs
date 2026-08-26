@@ -119,6 +119,7 @@ impl OAuthRuntime {
             .set_limit(self.config.max_concurrent_requests());
     }
 
+    #[cfg(test)]
     pub async fn validate(&self, token: &str, username: &str, peer: IpAddr) -> Result<(), Error> {
         let permit = self.admit(peer)?;
         self.validate_admitted(token, username, &permit).await

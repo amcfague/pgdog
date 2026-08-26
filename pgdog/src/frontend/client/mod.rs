@@ -246,21 +246,26 @@ impl Client {
         Ok(result)
     }
 
-    async fn reject_oauth(
-        stream: &mut Stream,
-        peer: std::net::IpAddr,
-        runtime: &OAuthRuntime,
-    ) -> Result<(), Error> {
+    async fn read_oauth_initial(stream: &mut Stream) -> Result<Password, Error> {
         stream.send_flush(&Authentication::oauth()).await?;
         let message = stream.read_bounded(MAX_OAUTH_PASSWORD_FRAME_LEN).await?;
         if message.code() != 'p' {
             return Err(crate::net::Error::UnexpectedMessage('p', message.code()).into());
         }
         let password = Password::from_bytes(message.to_bytes())?;
-        let initial = password.sasl_initial_response()?;
-        if initial.name != "OAUTHBEARER" {
+        if password.sasl_initial_response()?.name != "OAUTHBEARER" {
             return Err(crate::net::Error::UnexpectedPayload.into());
         }
+        Ok(password)
+    }
+
+    async fn reject_oauth(
+        stream: &mut Stream,
+        peer: std::net::IpAddr,
+        runtime: &OAuthRuntime,
+    ) -> Result<(), Error> {
+        let password = Self::read_oauth_initial(stream).await?;
+        let initial = password.sasl_initial_response()?;
         let _permit = match runtime.admit(peer) {
             Ok(permit) => permit,
             Err(error) => {
@@ -284,16 +289,8 @@ impl Client {
         peer: std::net::IpAddr,
         runtime: &OAuthRuntime,
     ) -> Result<bool, Error> {
-        stream.send_flush(&Authentication::oauth()).await?;
-        let message = stream.read_bounded(MAX_OAUTH_PASSWORD_FRAME_LEN).await?;
-        if message.code() != 'p' {
-            return Err(crate::net::Error::UnexpectedMessage('p', message.code()).into());
-        }
-        let password = Password::from_bytes(message.to_bytes())?;
+        let password = Self::read_oauth_initial(stream).await?;
         let initial = password.sasl_initial_response()?;
-        if initial.name != "OAUTHBEARER" {
-            return Err(crate::net::Error::UnexpectedPayload.into());
-        }
         let permit = match runtime.admit(peer) {
             Ok(permit) => permit,
             Err(error) => {

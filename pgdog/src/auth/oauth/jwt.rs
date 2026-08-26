@@ -2,7 +2,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::jwk::{
     AlgorithmParameters, EllipticCurve, Jwk, JwkSet, KeyOperations, PublicKeyUse,
 };
-use jsonwebtoken::{Algorithm, DecodingKey, Header, Validation, decode, decode_header};
+use jsonwebtoken::{Algorithm, DecodingKey, Header, Validation, decode};
 use pgdog_config::{OAuth, OAuthAlgorithm};
 use serde_json::{Map, Value};
 use tokio::time::Instant;
@@ -55,14 +55,11 @@ pub(super) fn parse(token: &str, config: &OAuth) -> Result<ParsedToken, Error> {
 
     let header_value = unique_segment(encoded_header)?;
     let claims_value = unique_segment(encoded_claims)?;
-    if !header_value.is_object() {
-        return Err(Error::InvalidHeader);
-    }
+    let header: Header = serde_json::from_value(header_value).map_err(|_| Error::InvalidHeader)?;
     let claims = claims_value
         .as_object()
         .cloned()
         .ok_or(Error::InvalidClaims)?;
-    let header = decode_header(token).map_err(|_| Error::MalformedToken)?;
 
     if header.typ.as_deref() != Some("at+jwt")
         || header.kid.as_deref().is_none_or(str::is_empty)
