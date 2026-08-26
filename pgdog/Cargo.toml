@@ -79,6 +79,8 @@ crc32c = "0.6.8"
 bit-vec = "0.8"
 smallvec = "1"
 reqwest.workspace = true
+jsonwebtoken.workspace = true
+oauth2.workspace = true
 hex = "0.4"
 x509-parser = "0.18"
 pg_raw_parse.workspace = true
@@ -101,4 +103,5 @@ tempfile = "3.23.0"
 stats_alloc = "0.1.10"
 brunch = "0.5"
 wiremock = "0.6"
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 tokio = { version = "1", features = ["full", "test-util"] }

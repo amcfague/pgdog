@@ -120,17 +120,19 @@ impl OAuth {
     }
 
     pub(crate) fn validate(&self, general: &General) -> Result<(), Error> {
-        let secret = match env::var(CLIENT_SECRET_ENV) {
-            Ok(secret) => Some(secret),
-            Err(VarError::NotPresent) => None,
-            Err(VarError::NotUnicode(_)) => {
-                return Err(parse_error(format!(
-                    "{CLIENT_SECRET_ENV} must contain valid UTF-8"
-                )));
-            }
+        let secret = if self.mode == OAuthMode::Introspection {
+            secret_from_env()?
+        } else {
+            None
         };
 
         self.validate_with_secret_env(general, secret.as_deref())
+    }
+
+    /// Resolve and normalize the configured introspection client secret.
+    pub fn resolve_client_secret(&self) -> Result<String, Error> {
+        let secret = secret_from_env()?;
+        self.resolve_client_secret_with_env(secret.as_deref())
     }
 
     fn validate_with_secret_env(
@@ -265,6 +267,16 @@ impl OAuth {
                 "an OAuth client secret is required through client_secret_file or {CLIENT_SECRET_ENV}"
             ))),
         }
+    }
+}
+
+fn secret_from_env() -> Result<Option<String>, Error> {
+    match env::var(CLIENT_SECRET_ENV) {
+        Ok(secret) => Ok(Some(secret)),
+        Err(VarError::NotPresent) => Ok(None),
+        Err(VarError::NotUnicode(_)) => Err(parse_error(format!(
+            "{CLIENT_SECRET_ENV} must contain valid UTF-8"
+        ))),
     }
 }
 
