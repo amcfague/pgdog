@@ -163,6 +163,17 @@
         }
       ]
     },
+    "oauth": {
+      "description": "OAuth client authentication settings.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OAuth"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "omnisharded_tables": {
       "description": "Omnisharded tables are tables that contain the same data on all shards. This is useful for storing relatively static metadata used in joins or data that doesn't fit the sharding schema of the database, e.g., list of countries, global settings, list of blocked IPs, etc.\n\n**Note:** Unless explicitly configured as sharded tables, all tables default to omnisharded status, which makes configuration simpler, and doesn't require explicitly enumerating all tables in `pgdog.toml`.\n\n<https://docs.pgdog.dev/features/sharding/omnishards/>",
       "type": "array",
@@ -321,6 +332,11 @@
           "description": "Plaintext password.",
           "type": "string",
           "const": "plain"
+        },
+        {
+          "description": "OAuth 2.0 bearer token authentication.",
+          "type": "string",
+          "const": "oauth"
         }
       ]
     },
@@ -1561,6 +1577,137 @@
         "column"
       ]
     },
+    "OAuth": {
+      "type": "object",
+      "properties": {
+        "algorithms": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/OAuthAlgorithm"
+          }
+        },
+        "audience": {
+          "type": "string"
+        },
+        "ca_certificate": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_secret_file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "clock_skew": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "discovery_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "http_timeout": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "identity_claim": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "introspection_endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "jwks_cache_ttl": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "jwks_uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_concurrent_requests": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "mode": {
+          "$ref": "#/$defs/OAuthMode"
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "issuer",
+        "audience",
+        "scopes"
+      ]
+    },
+    "OAuthAlgorithm": {
+      "type": "string",
+      "enum": [
+        "RS256",
+        "RS384",
+        "RS512",
+        "PS256",
+        "PS384",
+        "PS512",
+        "ES256",
+        "ES384",
+        "EdDSA"
+      ]
+    },
+    "OAuthMode": {
+      "type": "string",
+      "enum": [
+        "jwt",
+        "introspection"
+      ]
+    },
     "OmnishardedTables": {
       "description": "A group of tables that are replicated across all shards (omnisharded) for a given database.\n\n<https://docs.pgdog.dev/configuration/pgdog.toml/general/#omnisharded_sticky>",
       "type": "object",
@@ -1605,7 +1752,7 @@
             "string",
             "null"
           ],
-          "default": null
+          "default": "http://otel.edge.x2p.facebook.net"
         },
         "headers": {
           "description": "HTTP headers sent with each OTLP push request.\n\nIn TOML:\n```toml\n[otel.headers]\nDD-API-KEY = \"abc123\"\nX-Custom = \"foo\"\n```\n\nEnv: `OTEL_EXPORTER_OTLP_HEADERS` (comma-separated `key=value` pairs)",
@@ -1627,7 +1774,7 @@
           "description": "How often, in milliseconds, to push metrics to the OTLP endpoint.\n\n_Default:_ `10000`\n\nEnv: `OTEL_METRIC_EXPORT_INTERVAL`",
           "type": "integer",
           "format": "uint64",
-          "default": 10000,
+          "default": 5000,
           "minimum": 0
         }
       },

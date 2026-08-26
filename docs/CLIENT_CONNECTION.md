@@ -92,7 +92,7 @@ Steps, in order:
 1. Reject plaintext connections when `tls_client_required` is set.
 2. Resolve the target database and user from the startup parameters, and detect admin connections.
 3. Assign `BackendKeyData` ([`net/messages/backend_key.rs`](../pgdog/src/net/messages/backend_key.rs)) — synthetic pid and random secret — and create a `ClientComms` ([`frontend/comms.rs`](../pgdog/src/frontend/comms.rs)).
-4. Authenticate using the method configured for the user: Trust, MD5, SCRAM, Plaintext, or mTLS (via `stream.tls_identity()`). Passthrough auth forwards the credentials to Postgres.
+4. Authenticate with the listener-wide `general.auth_type`: Trust, MD5, SCRAM, Plaintext, or OAuth. A matching per-user mTLS identity takes precedence; passthrough auth forwards plaintext credentials to Postgres when enabled.
 5. Send `AuthenticationOk`.
 6. Reject the connection if the pooler is shutting down (`comms.offline()`) and the connection is not an admin connection.
 7. Retrieve server parameters from a pooled backend via `conn.parameters(&Request::unrouted(id))` (`id` is the connection's `FrontendPid`) and forward them as `ParameterStatus` messages.
@@ -101,6 +101,79 @@ Steps, in order:
 10. Call `comms.connect(id, addr, &params)` ([`frontend/comms.rs`](../pgdog/src/frontend/comms.rs)) to register the client in the process-wide map used for cancel routing and shutdown.
 
 `Sticky` ([`frontend/client/sticky.rs`](../pgdog/src/frontend/client/sticky.rs)) is initialised here via `Sticky::from_params(&params)`.
+
+### OAuth authentication
+
+Set `general.auth_type = "oauth"` to use one OAuth policy for the listener.
+OAuth cannot be mixed with password or passthrough authentication on the same
+listener. It also requires `tls_client_required = true` plus a readable
+frontend certificate and private key. Production clients must verify PgDog's
+certificate chain and hostname, such as with libpq `sslmode=verify-full`.
+
+PgDog supports two token-validation modes:
+
+- `jwt` validates a signed JWT access token locally. The protected header must
+  contain `typ = "at+jwt"`, an allowed asymmetric algorithm, and one unambiguous
+  `kid` match from the trusted JWKS.
+- `introspection` sends the token to an authenticated RFC 7662 endpoint. The
+  response must be active, have `token_type = "Bearer"`, and contain an `iss`
+  exactly equal to the configured issuer. Introspection results are never
+  cached.
+
+Both modes require the configured audience, all configured scopes, and a
+string identity claim equal to the PostgreSQL startup username. The identity
+claim defaults to `sub`. OAuth authenticates only the client-to-PgDog leg;
+backend passwords and external backend identity methods are unchanged.
+
+| `[oauth]` field | Use | Default or requirement |
+|---|---|---|
+| `mode` | Both | Required: `jwt` or `introspection` |
+| `issuer` | Both | Required HTTPS URL; token and metadata issuer matching is exact |
+| `audience` | Both | Required non-empty audience |
+| `scopes` | Both | Required non-empty list; every scope must be present |
+| `identity_claim` | Both | `sub` |
+| `discovery_url` | Both | Derived from `issuer`; an explicit HTTPS value authorizes that exact endpoint |
+| `http_timeout` | Both | `5000` ms; one aggregate provider deadline shorter than `client_login_timeout` |
+| `clock_skew` | Both | `60000` ms; maximum `300000` ms |
+| `ca_certificate` | Both | Optional path to a PEM CA bundle; native roots are used otherwise |
+| `max_concurrent_requests` | Both | `64`; range `1..=1024` |
+| `algorithms` | JWT | `["RS256"]`; asymmetric algorithms only |
+| `jwks_uri` | JWT | Discovered; an explicit HTTPS value authorizes that exact endpoint |
+| `jwks_cache_ttl` | JWT | `300000` ms; maximum `3600000` ms |
+| `introspection_endpoint` | Introspection | Discovered; an explicit HTTPS value authorizes that exact endpoint |
+| `client_id` | Introspection | Required |
+| `client_secret_file` | Introspection | Secret-file path; otherwise use `PGDOG_OAUTH_CLIENT_SECRET`, never both |
+
+A PostgreSQL 18 libpq client first sends an empty OAuth authentication value.
+PgDog replies with the discovery URL and scopes, consumes libpq's one-byte
+acknowledgement, sends a generic failure, and closes that discovery connection.
+After the application obtains a token, libpq reconnects and sends it in a new
+`OAUTHBEARER` exchange. Successful authentication sends `AuthenticationOk`
+without `AuthenticationSASLFinal`.
+
+Provider HTTP uses TLS verification, no redirects, and no ambient proxies.
+Discovered token-bearing endpoints must share the issuer's origin unless the
+operator supplied the exact `discovery_url`, `jwks_uri`, or
+`introspection_endpoint`. Discovery metadata is cached for five minutes. JWKS
+uses `jwks_cache_ttl`; expired data is not accepted, and unknown-key refreshes
+are coalesced and limited to one per runtime generation every five seconds.
+Bearer tokens, client secrets, claims, and provider bodies are omitted from
+logs and client errors. Secret values are limited to 64 KiB and one terminal
+newline is removed when PgDog reads a secret file.
+
+PgDog rejects OAuth password frames above 128 KiB, bearer tokens above 64 KiB,
+provider bodies above 1 MiB, JWKS sets above 128 keys, and concurrent work over
+the configured limit. One peer can hold at most
+`min(8, max_concurrent_requests)` permits. Rejected attempts do not reach the
+authorization server.
+
+Startup, SIGHUP, admin `SET`, and internal database rebuilds prepare config,
+TLS, OAuth state, and pools before one atomic publication. A failed preparation
+keeps the active generation. A lower concurrency limit blocks new work until
+existing validations fall below it. Reload rereads CA and secret files and
+starts empty discovery and JWKS caches. Existing client sessions keep their
+connection-time authorization and are not disconnected when tokens expire,
+are revoked, or policy changes.
 
 ---
 

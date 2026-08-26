@@ -198,13 +198,14 @@ role = "auto"
 
 &#128216; **[Authentication](https://docs.pgdog.dev/features/authentication/)**
 
-PgDog supports five authentication methods:
+PgDog supports six authentication methods:
 
 1. Password-based
-2. AWS RDS IAM
-3. Azure Workload Identity
-4. HashiCorp Vault dynamic credentials
-5. HashiCorp Vault static role credentials
+2. OAuth 2.0 bearer tokens
+3. AWS RDS IAM
+4. Azure Workload Identity
+5. HashiCorp Vault dynamic credentials
+6. HashiCorp Vault static role credentials
 
 #### Password-based authentication
 
@@ -213,6 +214,37 @@ Password-based authentication allows for clients to authenticate to PgDog and fo
 - SCRAM-SHA-256
 - MD5
 - Plain
+
+#### OAuth client authentication
+
+PgDog can authenticate PostgreSQL 18 clients with SASL `OAUTHBEARER`. This is
+client-to-PgDog authentication only. PgDog still uses the configured database
+password, trust, or external identity method when it opens PostgreSQL backend
+connections.
+
+OAuth is global for the listener and requires frontend TLS:
+
+```toml
+[general]
+auth_type = "oauth"
+tls_client_required = true
+tls_certificate = "/etc/pgdog/tls/server.crt"
+tls_private_key = "/etc/pgdog/tls/server.key"
+
+[oauth]
+mode = "jwt"
+issuer = "https://identity.example.com/tenant"
+audience = "postgres"
+scopes = ["openid", "db.connect"]
+algorithms = ["RS256"]
+```
+
+For RFC 7662 introspection, set `mode = "introspection"`, `client_id`, and
+either `client_secret_file` or `PGDOG_OAUTH_CLIENT_SECRET`. Production clients
+must verify PgDog's certificate chain and hostname, for example with
+`sslmode=verify-full`. See
+[Client connection lifecycle](docs/CLIENT_CONNECTION.md#oauth-authentication)
+for the full field contract, discovery flow, limits, and reload behavior.
 
 #### RDS IAM backend authentication
 

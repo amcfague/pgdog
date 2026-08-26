@@ -290,7 +290,9 @@ mirror_queue = 128
 # Available options:
 # - scram
 # - md5
+# - plain
 # - trust
+# - oauth
 auth_type = "scram"
 # Disable cross-shard queries.
 #
@@ -301,6 +303,31 @@ cross_shard_disabled = false
 # Default: disabled
 #
 dns_ttl = 5_000
+
+# OAuth can be pre-staged while another global auth_type is active. To enable
+# it, set auth_type = "oauth", tls_client_required = true, and configure a
+# readable tls_certificate and tls_private_key above.
+[oauth]
+mode = "jwt"
+issuer = "https://identity.example.com/tenant"
+audience = "postgres"
+scopes = ["openid", "db.connect"]
+identity_claim = "sub"
+http_timeout = 5_000
+clock_skew = 60_000
+max_concurrent_requests = 64
+algorithms = ["RS256"]
+jwks_cache_ttl = 300_000
+# discovery_url = "https://identity.example.com/tenant/.well-known/openid-configuration"
+# jwks_uri = "https://identity.example.com/tenant/jwks"
+# ca_certificate = "relative/or/absolute/path/to/provider-ca.pem"
+#
+# For remote token introspection, use mode = "introspection", remove the
+# JWT-only fields above, and set:
+# introspection_endpoint = "https://identity.example.com/oauth/introspect"
+# client_id = "pgdog"
+# client_secret_file = "relative/or/absolute/path/to/oauth-client-secret"
+# If client_secret_file is omitted, set PGDOG_OAUTH_CLIENT_SECRET instead.
 
 #
 # Admin database used for stats and system admin.
