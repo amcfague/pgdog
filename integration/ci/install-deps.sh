@@ -20,10 +20,10 @@ if ! dpkg -s mold gdb >/dev/null 2>&1; then
     sudo apt-get install -y --no-install-recommends mold gdb
 fi
 
-# The protocol_version smoke test needs a psql >= 18 client. The runner
-# image ships psql 16, so pull the v18 client from PGDG. pg_wrapper picks
-# the highest installed major, so /usr/bin/psql will resolve to 18.
-if ! dpkg -s postgresql-client-18 >/dev/null 2>&1; then
+# The protocol_version and OAuth smoke tests need PostgreSQL 18's psql,
+# libpq headers, and OAuth hook API. pg_wrapper picks the highest installed
+# major, so /usr/bin/psql and pg_config will resolve to 18.
+if ! dpkg -s postgresql-client-18 postgresql-server-dev-18 >/dev/null 2>&1; then
     sudo install -d /usr/share/postgresql-common/pgdg
     sudo curl -fsSLo /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
         https://www.postgresql.org/media/keys/ACCC4CF8.asc
@@ -31,7 +31,7 @@ if ! dpkg -s postgresql-client-18 >/dev/null 2>&1; then
     echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
         | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
     sudo apt-get update
-    sudo apt-get install -y --no-install-recommends postgresql-client-18
+    sudo apt-get install -y --no-install-recommends postgresql-client-18 postgresql-server-dev-18
 fi
 
 # Kitware prebuilt cmake pinned to the version pgdog expects. Much faster

@@ -120,9 +120,21 @@ impl OAuthRuntime {
     }
 
     pub async fn validate(&self, token: &str, username: &str, peer: IpAddr) -> Result<(), Error> {
-        let _permit = self.admission.try_acquire(peer)?;
-        let deadline = Instant::now() + self.config.http_timeout();
+        let permit = self.admit(peer)?;
+        self.validate_admitted(token, username, &permit).await
+    }
 
+    pub(crate) fn admit(&self, peer: IpAddr) -> Result<AdmissionGuard, Error> {
+        self.admission.try_acquire(peer)
+    }
+
+    pub(crate) async fn validate_admitted(
+        &self,
+        token: &str,
+        username: &str,
+        _permit: &AdmissionGuard,
+    ) -> Result<(), Error> {
+        let deadline = Instant::now() + self.config.http_timeout();
         match self.config.mode {
             OAuthMode::Jwt => jwt::validate(self, token, username, deadline).await,
             OAuthMode::Introspection => {
@@ -333,7 +345,7 @@ impl OAuthAdmission {
     }
 }
 
-struct AdmissionGuard {
+pub(crate) struct AdmissionGuard {
     admission: Arc<OAuthAdmission>,
     peer: IpAddr,
 }

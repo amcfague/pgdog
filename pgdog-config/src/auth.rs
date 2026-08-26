@@ -50,6 +50,7 @@ pub enum AuthType {
     /// Plaintext password.
     Plain,
     /// OAuth 2.0 bearer token authentication.
+    #[serde(rename = "oauth")]
     OAuth,
 }
 

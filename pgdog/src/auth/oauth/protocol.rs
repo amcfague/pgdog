@@ -78,6 +78,7 @@ pub fn parse_initial_response(response: Option<&[u8]>) -> Result<InitialResponse
 
     let attributes = &attributes[1..attributes.len() - 2];
     let mut token = None;
+    let mut discovery = false;
     let mut host = None;
     let mut port = None;
 
@@ -85,14 +86,15 @@ pub fn parse_initial_response(response: Option<&[u8]>) -> Result<InitialResponse
         let Some((name, value)) = attribute.split_once('=') else {
             return Err(Error::InvalidAttribute);
         };
-        if value.is_empty() {
-            return Err(Error::InvalidAttribute);
-        }
 
         match name {
             "auth" => {
-                if token.is_some() {
+                if token.is_some() || discovery {
                     return Err(Error::DuplicateAttribute("auth"));
+                }
+                if value.is_empty() {
+                    discovery = true;
+                    continue;
                 }
                 let Some(value) = value.strip_prefix("Bearer ") else {
                     return Err(Error::InvalidScheme);
@@ -106,6 +108,9 @@ pub fn parse_initial_response(response: Option<&[u8]>) -> Result<InitialResponse
                 token = Some(value);
             }
             "host" => {
+                if value.is_empty() {
+                    return Err(Error::InvalidAttribute);
+                }
                 if host.replace(value).is_some() {
                     return Err(Error::DuplicateAttribute("host"));
                 }
@@ -113,6 +118,9 @@ pub fn parse_initial_response(response: Option<&[u8]>) -> Result<InitialResponse
             "port" => {
                 if port.is_some() {
                     return Err(Error::DuplicateAttribute("port"));
+                }
+                if value.is_empty() {
+                    return Err(Error::InvalidAttribute);
                 }
                 let value = value.parse().map_err(|_| Error::InvalidAttribute)?;
                 if value == 0 {
@@ -124,11 +132,15 @@ pub fn parse_initial_response(response: Option<&[u8]>) -> Result<InitialResponse
         }
     }
 
-    Ok(InitialResponse::Bearer(BearerResponse {
-        token: token.ok_or(Error::InvalidAttribute)?,
-        host,
-        port,
-    }))
+    if discovery {
+        Ok(InitialResponse::Discovery)
+    } else {
+        Ok(InitialResponse::Bearer(BearerResponse {
+            token: token.ok_or(Error::InvalidAttribute)?,
+            host,
+            port,
+        }))
+    }
 }
 
 fn valid_bearer_token(token: &str) -> bool {
@@ -243,6 +255,10 @@ mod tests {
         );
         assert_eq!(
             parse_initial_response(Some(&[])).unwrap(),
+            InitialResponse::Discovery
+        );
+        assert_eq!(
+            parse_initial_response(Some(b"n,,\x01auth=\x01\x01")).unwrap(),
             InitialResponse::Discovery
         );
 

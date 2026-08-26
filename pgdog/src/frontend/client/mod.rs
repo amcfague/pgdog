@@ -246,7 +246,11 @@ impl Client {
         Ok(result)
     }
 
-    async fn reject_oauth(stream: &mut Stream, runtime: &OAuthRuntime) -> Result<(), Error> {
+    async fn reject_oauth(
+        stream: &mut Stream,
+        peer: std::net::IpAddr,
+        runtime: &OAuthRuntime,
+    ) -> Result<(), Error> {
         stream.send_flush(&Authentication::oauth()).await?;
         let message = stream.read_bounded(MAX_OAUTH_PASSWORD_FRAME_LEN).await?;
         if message.code() != 'p' {
@@ -257,9 +261,21 @@ impl Client {
         if initial.name != "OAUTHBEARER" {
             return Err(crate::net::Error::UnexpectedPayload.into());
         }
-        oauth_protocol::parse_initial_response(initial.response)?;
-        oauth_protocol::send_failure(stream, runtime.config()).await?;
-        Ok(())
+        let _permit = match runtime.admit(peer) {
+            Ok(permit) => permit,
+            Err(error) => {
+                warn!(%peer, reason = %error, "OAuth authentication rejected");
+                oauth_protocol::send_failure(stream, runtime.config()).await?;
+                return Ok(());
+            }
+        };
+        match oauth_protocol::parse_initial_response(initial.response) {
+            Ok(_) | Err(oauth_protocol::Error::TokenTooLarge) => {
+                oauth_protocol::send_failure(stream, runtime.config()).await?;
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     async fn check_oauth(
@@ -278,14 +294,34 @@ impl Client {
         if initial.name != "OAUTHBEARER" {
             return Err(crate::net::Error::UnexpectedPayload.into());
         }
+        let permit = match runtime.admit(peer) {
+            Ok(permit) => permit,
+            Err(error) => {
+                warn!(user, %peer, reason = %error, "OAuth authentication rejected");
+                oauth_protocol::send_failure(stream, runtime.config()).await?;
+                return Ok(false);
+            }
+        };
 
-        match oauth_protocol::parse_initial_response(initial.response)? {
+        let response = match oauth_protocol::parse_initial_response(initial.response) {
+            Ok(response) => response,
+            Err(oauth_protocol::Error::TokenTooLarge) => {
+                oauth_protocol::send_failure(stream, runtime.config()).await?;
+                return Ok(false);
+            }
+            Err(error) => return Err(error.into()),
+        };
+
+        match response {
             InitialResponse::Discovery => {
                 oauth_protocol::send_failure(stream, runtime.config()).await?;
                 Ok(false)
             }
             InitialResponse::Bearer(response) => {
-                if let Err(error) = runtime.validate(response.token, user, peer).await {
+                if let Err(error) = runtime
+                    .validate_admitted(response.token, user, &permit)
+                    .await
+                {
                     warn!(user, %peer, reason = %error, "OAuth authentication rejected");
                     oauth_protocol::send_failure(stream, runtime.config()).await?;
                     Ok(false)
@@ -401,7 +437,7 @@ impl Client {
 
                 Err(_) if auth_type == &AuthType::OAuth => {
                     let oauth = state.oauth.as_deref().ok_or(Error::Auth)?;
-                    Self::reject_oauth(&mut stream, oauth).await?;
+                    Self::reject_oauth(&mut stream, addr.ip(), oauth).await?;
                     return Ok(None);
                 }
 

@@ -1,0 +1,14 @@
+[general]
+host = "127.0.0.1"
+port = 7643
+auth_type = "oauth"
+tls_client_required = true
+tls_certificate = "__TLS_CERTIFICATE__"
+tls_private_key = "__TLS_PRIVATE_KEY__"
+client_login_timeout = 5000
+min_pool_size = 0
+
+[[databases]]
+name = "pgdog"
+host = "127.0.0.1"
+port = 5432

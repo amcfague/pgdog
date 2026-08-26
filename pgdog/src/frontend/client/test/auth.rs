@@ -160,9 +160,11 @@ async fn test_oauth_prevalidation_rejection_skips_provider() {
     let addr = listener.local_addr().unwrap();
     let runtime = oauth_runtime();
     let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
+        let (stream, peer) = listener.accept().await.unwrap();
         let mut stream = Stream::plain(stream, 4096);
-        Client::reject_oauth(&mut stream, &runtime).await.unwrap();
+        Client::reject_oauth(&mut stream, peer.ip(), &runtime)
+            .await
+            .unwrap();
     });
     let mut client = TcpStream::connect(addr).await.unwrap();
 

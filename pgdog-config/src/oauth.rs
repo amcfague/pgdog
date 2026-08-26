@@ -454,6 +454,8 @@ scopes = ["openid", "db.connect"]
         assert_eq!(round_trip.oauth, config.oauth);
         assert_eq!(AuthType::from_str("oauth").unwrap(), AuthType::OAuth);
         assert_eq!(AuthType::OAuth.to_string(), "oauth");
+        let oauth_auth: Config = toml::from_str("[general]\nauth_type = \"oauth\"").unwrap();
+        assert_eq!(oauth_auth.general.auth_type, AuthType::OAuth);
     }
 
     #[test]
