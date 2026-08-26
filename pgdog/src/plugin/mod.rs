@@ -147,10 +147,3 @@ pub fn plugin(name: &str) -> Option<&PluginVtable> {
 pub fn plugins() -> Option<&'static HashMap<String, &'static PluginVtable>> {
     PLUGINS.get()
 }
-
-/// Load plugins from config.
-pub fn load_from_config() -> Result<(), libloading::Error> {
-    let config = crate::config::config();
-
-    load(&config.config)
-}

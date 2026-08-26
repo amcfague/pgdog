@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use crate::config::TlsVerifyMode;
+use crate::config::{ConfigAndUsers, TlsVerifyMode};
 use arc_swap::ArcSwapOption;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::rustls::{
@@ -18,14 +18,13 @@ use tokio_rustls::rustls::{
     server::{ServerConnection, WebPkiClientVerifier, danger::ClientCertVerifier},
 };
 use tokio_rustls::{TlsAcceptor, TlsConnector};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use x509_parser::prelude::FromDer;
 
 use crate::config::config;
 
 use super::Error;
 
-static ACCEPTOR: ArcSwapOption<TlsAcceptor> = ArcSwapOption::const_empty();
 static ACCEPTOR_BUILD_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 static CONNECTOR: ArcSwapOption<ConnectorCacheEntry> = ArcSwapOption::const_empty();
@@ -82,7 +81,7 @@ fn increment_connector_build_count() {}
 
 /// Get the current TLS acceptor snapshot, if TLS is enabled.
 pub fn acceptor() -> Option<Arc<TlsAcceptor>> {
-    ACCEPTOR.load_full()
+    crate::runtime::live().tls_acceptor.clone()
 }
 
 /// Extract the hostname identity from the peer's TLS certificate, if present.
@@ -151,10 +150,26 @@ pub fn reload() -> Result<(), Error> {
     debug!("reloading TLS configuration");
 
     let config = config();
-    let general = &config.config.general;
+    let previous = acceptor();
+    let new_acceptor = prepare_acceptor(&config)?.map(Arc::new);
+    crate::runtime::replace_tls_acceptor(new_acceptor.clone());
 
-    // Always validate upstream TLS settings so we surface CA and client
-    // certificate issues early.
+    match (new_acceptor, config.config.general.tls()) {
+        (Some(_), Some((cert, _))) if previous.is_none() => {
+            info!(cert = %cert.display(), "🔑 TLS enabled");
+        }
+        (Some(_), Some((cert, _))) => {
+            info!(cert = %cert.display(), "🔁 TLS certificate reloaded");
+        }
+        (None, _) if previous.is_some() => info!("🔓 TLS disabled"),
+        _ => {}
+    }
+
+    Ok(())
+}
+
+pub(crate) fn prepare_acceptor(config: &ConfigAndUsers) -> Result<Option<TlsAcceptor>, Error> {
+    let general = &config.config.general;
     let _ = connector_with_verify_mode(
         general.tls_verify,
         general.tls_server_ca_certificate.as_ref(),
@@ -162,37 +177,10 @@ pub fn reload() -> Result<(), Error> {
         general.tls_server_private_key.as_ref(),
     )?;
 
-    let tls_paths = general.tls();
-    let client_ca = general.tls_client_ca_certificate.as_deref();
-    let new_acceptor = tls_paths
-        .map(|(cert, key)| build_acceptor(cert, key, client_ca))
-        .transpose()?;
-
-    match (new_acceptor, tls_paths) {
-        (Some(acceptor), Some((cert, _))) => {
-            let acceptor = Arc::new(acceptor);
-            let previous = ACCEPTOR.swap(Some(acceptor));
-
-            if previous.is_none() {
-                info!(cert = %cert.display(), "🔑 TLS enabled");
-            } else {
-                info!(cert = %cert.display(), "🔁 TLS certificate reloaded");
-            }
-        }
-        (None, _) => {
-            let previous = ACCEPTOR.swap(None);
-            if previous.is_some() {
-                info!("🔓 TLS disabled");
-            }
-        }
-        // This state should be unreachable because `new_acceptor` is `Some`
-        // iff `tls_paths` is `Some`.
-        (Some(_), None) => {
-            warn!("TLS acceptor built without configuration; keeping previous value");
-        }
-    }
-
-    Ok(())
+    general
+        .tls()
+        .map(|(cert, key)| build_acceptor(cert, key, general.tls_client_ca_certificate.as_deref()))
+        .transpose()
 }
 
 fn build_acceptor(cert: &Path, key: &Path, client_ca: Option<&Path>) -> Result<TlsAcceptor, Error> {
@@ -391,7 +379,7 @@ pub(crate) fn test_acceptor_build_count() -> usize {
 
 #[cfg(test)]
 pub(crate) fn test_reset_acceptor() {
-    ACCEPTOR.store(None);
+    crate::runtime::replace_tls_acceptor(None);
     ACCEPTOR_BUILD_COUNT.store(0, Ordering::SeqCst);
 }
 

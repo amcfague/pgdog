@@ -7,7 +7,7 @@ use crate::backend::databases::{databases, reload, shutdown};
 use crate::config::config;
 use crate::frontend::client::query_engine::two_pc::Manager;
 use crate::net::messages::{FrontendPid, NegotiateProtocolVersion, Startup, hello::SslReply};
-use crate::net::tls::{acceptor, peer_certificate_present, peer_identity};
+use crate::net::tls::{peer_certificate_present, peer_identity};
 use crate::net::{self, Stream, tweak};
 use crate::sighup::Sighup;
 use tokio::net::{TcpListener, TcpStream};
@@ -150,7 +150,8 @@ impl Listener {
     }
 
     async fn handle_client(stream: TcpStream, addr: SocketAddr) -> Result<(), Error> {
-        let config = config();
+        let state = crate::runtime::live();
+        let config = state.config.clone();
 
         // Not the end of the world if the tweaks are
         // not applied.
@@ -163,7 +164,7 @@ impl Listener {
 
         let mut stream = Stream::plain(stream, config.config.memory.net_buffer);
 
-        let tls = acceptor();
+        let tls = state.tls_acceptor.clone();
 
         loop {
             let startup = match Startup::from_stream(&mut stream).await {
@@ -233,13 +234,13 @@ impl Listener {
                             .await?;
                     }
 
-                    Box::pin(Client::spawn(stream, params, addr, config, negotiated)).await?;
+                    Box::pin(Client::spawn(stream, params, addr, state, negotiated)).await?;
                     break;
                 }
 
                 Startup::Cancel { ref id } => {
                     if comms().verify_cancel(id) {
-                        let _ = databases().cancel(FrontendPid::from(id)).await;
+                        let _ = state.databases().cancel(FrontendPid::from(id)).await;
                     }
                     break;
                 }

@@ -1,6 +1,6 @@
 use crate::{
     backend::databases,
-    config::{self, RewriteMode, config},
+    config::{RewriteMode, config},
     frontend::PreparedStatements,
 };
 
@@ -198,8 +198,8 @@ impl Command for Set {
             _ => return Ok(vec![]),
         }
 
-        config::set(config)?;
-        databases::init()?;
+        crate::runtime::reload_config(config, true)
+            .map_err(|error| crate::backend::Error::Runtime(error.to_string()))?;
 
         Ok(vec![])
     }
@@ -225,5 +225,18 @@ mod test {
         let cmd = Set::parse(cmd).unwrap();
         assert_eq!(cmd.name, "query_timeout");
         assert_eq!(cmd.value, "5000");
+    }
+
+    #[tokio::test]
+    async fn invalid_oauth_set_does_not_publish_candidate() {
+        crate::config::set(crate::config::ConfigAndUsers::default()).unwrap();
+        let before = crate::runtime::live();
+        let command = Set {
+            name: "auth_type".into(),
+            value: "oauth".into(),
+        };
+
+        assert!(command.execute().await.is_err());
+        assert!(std::sync::Arc::ptr_eq(&before, &crate::runtime::live()));
     }
 }

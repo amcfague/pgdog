@@ -9,15 +9,16 @@ use crate::{
     admin::server::AdminServer,
     backend::{
         PubSubClient,
-        databases::{self, databases},
+        databases::{self, Databases},
         pool, reload_notify,
     },
-    config::{PoolerMode, User, config},
+    config::{ConfigAndUsers, PoolerMode, User},
     frontend::{
         ClientRequest, Router,
         router::{CopyRow, Route, parser::Shard},
     },
     net::{Bind, Message, ParameterStatus, Protocol, ProtocolMessage},
+    runtime::LiveState,
     state::State,
 };
 
@@ -58,6 +59,16 @@ pub struct Connection {
 impl Connection {
     /// Create new server connection handler.
     pub(crate) fn new(user: &str, database: &str, admin: bool) -> Result<Self, Error> {
+        let state = crate::runtime::live();
+        Self::new_with_state(user, database, admin, &state)
+    }
+
+    pub(crate) fn new_with_state(
+        user: &str,
+        database: &str,
+        admin: bool,
+        state: &LiveState,
+    ) -> Result<Self, Error> {
         let mut conn = Self {
             binding: if admin {
                 Binding::Admin(AdminServer::new())
@@ -72,7 +83,8 @@ impl Connection {
         };
 
         if !admin {
-            conn.reload()?;
+            let databases = state.databases();
+            conn.reload_from(&state.config, &databases)?;
         }
 
         Ok(conn)
@@ -348,12 +360,21 @@ impl Connection {
 
     /// Fetch the cluster from the global database store.
     fn reload(&mut self) -> Result<(), Error> {
+        let state = crate::runtime::live();
+        let databases = state.databases();
+        self.reload_from(&state.config, &databases)
+    }
+
+    fn reload_from(
+        &mut self,
+        config: &ConfigAndUsers,
+        current_databases: &Databases,
+    ) -> Result<(), Error> {
         if matches!(self.binding, Binding::Admin(_)) {
             return Ok(());
         }
 
         let user = (self.user.as_str(), self.database.as_str());
-        let config = config();
 
         // Check if we need re-configure passthrough auth using our existing password.
         //
@@ -362,7 +383,7 @@ impl Connection {
         // connection pools until a client needs to query it and we re-create it.
         //
         if config.config.general.passthrough_auth()
-            && databases().passwords(user).is_none()
+            && current_databases.passwords(user).is_none()
             && let Some(ref cluster) = self.cluster
         {
             let mut user = User {
@@ -388,17 +409,16 @@ impl Connection {
             databases::add(user)?;
         }
 
-        let databases = databases();
-        let cluster = databases.cluster(user)?;
+        let cluster = current_databases.cluster(user)?;
 
         self.cluster = Some(cluster.clone());
         let source_db = cluster.name();
-        self.mirrors = databases
+        self.mirrors = current_databases
             .mirrors(user)?
             .unwrap_or(&[])
             .iter()
             .map(|dest_cluster| {
-                let mirror_config = databases.mirror_config(source_db, dest_cluster.name());
+                let mirror_config = current_databases.mirror_config(source_db, dest_cluster.name());
                 Mirror::spawn(source_db, dest_cluster, mirror_config)
             })
             .collect::<Result<Vec<_>, Error>>()?;

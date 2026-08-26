@@ -25,7 +25,7 @@ pub(crate) fn ready() -> Option<Notified<'static>> {
 /// RAII guard returned by [`started`]. Holds the reload mutex and ensures
 /// `ready` is restored (and waiters woken) on drop, even if the caller
 /// returns early or panics.
-pub(super) struct ReloadGuard {
+pub(crate) struct ReloadGuard {
     _mutex: MutexGuard<'static, ()>,
 }
 
@@ -36,7 +36,7 @@ impl Drop for ReloadGuard {
     }
 }
 
-pub(super) fn started() -> ReloadGuard {
+pub(crate) fn started() -> ReloadGuard {
     let mutex = RELOAD_NOTIFY.running.lock();
     RELOAD_NOTIFY.ready.store(false, Ordering::Relaxed);
     ReloadGuard { _mutex: mutex }

@@ -559,4 +559,4 @@ impl<'de> Visitor<'de> for UniqueValueVisitor {
 }
 
 #[cfg(test)]
-mod test;
+pub(crate) mod test;

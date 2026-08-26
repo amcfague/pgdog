@@ -14,7 +14,14 @@ use tracing::{Level as LogLevel, debug, enabled, error, info, trace, warn};
 
 use super::{ClientRequest, Error, PreparedStatements};
 use crate::auth::AuthResult;
-use crate::auth::{md5, scram::Server};
+use crate::auth::{
+    md5,
+    oauth::{
+        OAuthRuntime,
+        protocol::{self as oauth_protocol, InitialResponse, MAX_OAUTH_PASSWORD_FRAME_LEN},
+    },
+    scram::Server,
+};
 use crate::backend::maintenance_mode;
 use crate::backend::pool::stats::MemoryStats;
 use crate::backend::{
@@ -22,7 +29,7 @@ use crate::backend::{
     pool::{Connection, Request},
 };
 use crate::config::convert::user_from_params;
-use crate::config::{self, AuthType, ConfigAndUsers, config};
+use crate::config::{self, AuthType, config};
 use crate::frontend::ClientComms;
 use crate::frontend::client::query_engine::{QueryEngine, QueryEngineContext, QueryEngineResult};
 use crate::net::messages::{
@@ -30,6 +37,7 @@ use crate::net::messages::{
     Protocol, ProtocolVersion, ReadyForQuery, ToBytes,
 };
 use crate::net::{MessageBuffer, ProtocolMessage, Stream, parameter::Parameters};
+use crate::runtime::LiveState;
 use crate::state::State;
 use crate::stats::memory::MemoryUsage;
 use crate::util::{safe_timeout, user_database_from_params};
@@ -48,6 +56,8 @@ pub use transaction_type::TransactionType;
 ///
 #[derive(Debug)]
 pub struct Client {
+    // Runtime generation captured when this client connected.
+    _live_state: Arc<LiveState>,
     // Client IP.
     addr: SocketAddr,
     // Client socket.
@@ -128,7 +138,7 @@ impl Client {
     /// - `stream`: TCP stream.
     /// - `params`: Client parameters extracted from the [`crate::net::Startup`] message.
     /// - `addr`: TCP IP.
-    /// - `config`: Currently loaded `pgdog.toml` and `users.toml`.
+    /// - `state`: Runtime generation captured by the listener.
     /// - `protocol_version`: The version of the PostgreSQL protocol used by the client. This is typically 3.0, but can be 3.2
     ///   for more modern clients.
     ///
@@ -136,14 +146,14 @@ impl Client {
         stream: Stream,
         params: Parameters,
         addr: SocketAddr,
-        config: Arc<ConfigAndUsers>,
+        state: Arc<LiveState>,
         protocol_version: ProtocolVersion,
     ) -> Result<(), Error> {
-        let login_timeout = Duration::from_millis(config.config.general.client_login_timeout);
+        let login_timeout = Duration::from_millis(state.config.config.general.client_login_timeout);
 
         match safe_timeout(
             login_timeout,
-            Box::pin(Self::login(stream, params, addr, config, protocol_version)),
+            Box::pin(Self::login(stream, params, addr, state, protocol_version)),
         )
         .await
         {
@@ -229,11 +239,61 @@ impl Client {
             }
 
             AuthType::Trust => AuthResult::Ok,
-            // U4 replaces this fail-closed placeholder with the OAuth exchange.
+            // OAuth uses its own exchange and must fail closed if routed here.
             AuthType::OAuth => AuthResult::NoPasswordMatch,
         };
 
         Ok(result)
+    }
+
+    async fn reject_oauth(stream: &mut Stream, runtime: &OAuthRuntime) -> Result<(), Error> {
+        stream.send_flush(&Authentication::oauth()).await?;
+        let message = stream.read_bounded(MAX_OAUTH_PASSWORD_FRAME_LEN).await?;
+        if message.code() != 'p' {
+            return Err(crate::net::Error::UnexpectedMessage('p', message.code()).into());
+        }
+        let password = Password::from_bytes(message.to_bytes())?;
+        let initial = password.sasl_initial_response()?;
+        if initial.name != "OAUTHBEARER" {
+            return Err(crate::net::Error::UnexpectedPayload.into());
+        }
+        oauth_protocol::parse_initial_response(initial.response)?;
+        oauth_protocol::send_failure(stream, runtime.config()).await?;
+        Ok(())
+    }
+
+    async fn check_oauth(
+        stream: &mut Stream,
+        user: &str,
+        peer: std::net::IpAddr,
+        runtime: &OAuthRuntime,
+    ) -> Result<bool, Error> {
+        stream.send_flush(&Authentication::oauth()).await?;
+        let message = stream.read_bounded(MAX_OAUTH_PASSWORD_FRAME_LEN).await?;
+        if message.code() != 'p' {
+            return Err(crate::net::Error::UnexpectedMessage('p', message.code()).into());
+        }
+        let password = Password::from_bytes(message.to_bytes())?;
+        let initial = password.sasl_initial_response()?;
+        if initial.name != "OAUTHBEARER" {
+            return Err(crate::net::Error::UnexpectedPayload.into());
+        }
+
+        match oauth_protocol::parse_initial_response(initial.response)? {
+            InitialResponse::Discovery => {
+                oauth_protocol::send_failure(stream, runtime.config()).await?;
+                Ok(false)
+            }
+            InitialResponse::Bearer(response) => {
+                if let Err(error) = runtime.validate(response.token, user, peer).await {
+                    warn!(user, %peer, reason = %error, "OAuth authentication rejected");
+                    oauth_protocol::send_failure(stream, runtime.config()).await?;
+                    Ok(false)
+                } else {
+                    Ok(true)
+                }
+            }
+        }
     }
 
     /// Create new frontend client from the given TCP stream.
@@ -241,9 +301,12 @@ impl Client {
         mut stream: Stream,
         params: Parameters,
         addr: SocketAddr,
-        config: Arc<ConfigAndUsers>,
+        state: Arc<LiveState>,
         protocol_version: ProtocolVersion,
     ) -> Result<Option<Client>, Error> {
+        let config = state.config.clone();
+        let current_databases = state.databases();
+
         // Bail immediately if TLS is required but the connection isn't using it.
         if config.config.general.tls_client_required && !stream.is_tls() {
             stream.fatal(ErrorResponse::tls_required()).await?;
@@ -269,10 +332,18 @@ impl Client {
         // This is likely because passthrough authentication is enabled.
         //
         let auth_result = if admin {
-            // The admin database is virtual and never present in the cluster
-            // map, so authenticate directly against the configured admin password.
-            let passwords = [PasswordKind::Plain(admin_password.clone())];
-            Self::check_password(&mut stream, user, auth_type, &passwords).await?
+            if auth_type == &AuthType::OAuth {
+                let oauth = state.oauth.as_deref().ok_or(Error::Auth)?;
+                if !Self::check_oauth(&mut stream, user, addr.ip(), oauth).await? {
+                    return Ok(None);
+                }
+                AuthResult::Ok
+            } else {
+                // The admin database is virtual and never present in the cluster
+                // map, so authenticate directly against the configured admin password.
+                let passwords = [PasswordKind::Plain(admin_password.clone())];
+                Self::check_password(&mut stream, user, auth_type, &passwords).await?
+            }
         } else if passthrough {
             // Get the password. We always need it because we need to check if
             // it's current and hasn't been changed.
@@ -292,7 +363,7 @@ impl Client {
                 AuthResult::NoPassthroughNoUser
             }
         } else {
-            match databases::databases().cluster((user, database)) {
+            match current_databases.cluster((user, database)) {
                 Ok(cluster) => {
                     if let Some(identity) = cluster.identity() {
                         // mTLS authentication: the client certificate identity
@@ -313,6 +384,12 @@ impl Client {
                         // Asked for a certificate and declined. Users that opt out
                         // fall through to password authentication instead.
                         AuthResult::NoClientCertificate
+                    } else if auth_type == &AuthType::OAuth {
+                        let oauth = state.oauth.as_deref().ok_or(Error::Auth)?;
+                        if !Self::check_oauth(&mut stream, user, addr.ip(), oauth).await? {
+                            return Ok(None);
+                        }
+                        AuthResult::Ok
                     } else {
                         // Resolve Vault static role
                         // entries to plaintext before the auth exchange
@@ -320,6 +397,12 @@ impl Client {
                             crate::auth::vault::resolve_passwords(cluster.passwords()).await;
                         Self::check_password(&mut stream, user, auth_type, &passwords).await?
                     }
+                }
+
+                Err(_) if auth_type == &AuthType::OAuth => {
+                    let oauth = state.oauth.as_deref().ok_or(Error::Auth)?;
+                    Self::reject_oauth(&mut stream, oauth).await?;
+                    return Ok(None);
                 }
 
                 Err(_) => AuthResult::NoUserOrDatabase,
@@ -333,7 +416,13 @@ impl Client {
                     user, database, auth_result
                 );
             }
-            stream.fatal(ErrorResponse::auth(user, database)).await?;
+            stream
+                .fatal(if auth_type == &AuthType::OAuth {
+                    ErrorResponse::oauth()
+                } else {
+                    ErrorResponse::auth(user, database)
+                })
+                .await?;
             return Ok(None);
         } else {
             stream.send(&Authentication::Ok).await?;
@@ -350,7 +439,7 @@ impl Client {
             return Ok(None);
         }
 
-        let mut conn = match Connection::new(user, database, admin) {
+        let mut conn = match Connection::new_with_state(user, database, admin, &state) {
             Ok(conn) => conn,
             Err(err) => {
                 debug!("connection error: {}", err);
@@ -427,13 +516,14 @@ impl Client {
             database: database.to_string(),
             query_log_stdout: false,
             query_size_limit: None,
+            _live_state: state,
         }))
     }
 
     #[cfg(test)]
     pub fn new_test(stream: Stream, params: Parameters) -> Self {
-        use crate::config::config;
-
+        let live_state = crate::runtime::live();
+        let config = &live_state.config;
         let mut connect_params = Parameters::default();
         connect_params.insert("user", "pgdog");
         connect_params.insert("database", "pgdog");
@@ -442,7 +532,7 @@ impl Client {
         let id = FrontendPid::new();
         let key = BackendKeyData::new_frontend(ProtocolVersion::V3_0, id);
         let mut prepared_statements = PreparedStatements::new();
-        prepared_statements.level = config().config.general.prepared_statements;
+        prepared_statements.level = config.config.general.prepared_statements;
 
         Self {
             stream,
@@ -453,17 +543,18 @@ impl Client {
             prepared_statements,
             admin: false,
             transaction: None,
-            timeouts: Timeouts::from_config(&config().config.general),
+            timeouts: Timeouts::from_config(&config.config.general),
             client_request: ClientRequest::default(),
             stream_buffer: MessageBuffer::new(
                 4096,
-                config().config.general.frontend_query_size_limit_block(),
+                config.config.general.frontend_query_size_limit_block(),
             ),
             sticky: Sticky::from_params(&connect_params),
             params: connect_params,
             database: "pgdog".to_string(),
             query_log_stdout: false,
             query_size_limit: None,
+            _live_state: live_state,
         }
     }
 

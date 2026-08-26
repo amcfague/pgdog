@@ -63,6 +63,9 @@ pub enum Error {
     #[error("{0}")]
     Config(#[from] crate::config::error::Error),
 
+    #[error("runtime reload failed: {0}")]
+    Runtime(String),
+
     #[error("{0}")]
     PreparedStatementError(Box<ErrorResponse>),
 

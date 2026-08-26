@@ -482,7 +482,7 @@ async fn test_client_login_timeout() {
             stream,
             params,
             addr,
-            crate::config::config(),
+            crate::runtime::live(),
             ProtocolVersion::V3_0,
         )
         .await

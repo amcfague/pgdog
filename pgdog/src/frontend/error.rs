@@ -27,6 +27,9 @@ pub enum Error {
     #[error("authentication error")]
     Auth,
 
+    #[error("{0}")]
+    OAuthProtocol(#[from] crate::auth::oauth::protocol::Error),
+
     #[error("unexpected message: {0}")]
     UnexpectedMessage(char),
 

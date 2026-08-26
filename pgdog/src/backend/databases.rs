@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use futures::future::try_join_all;
 use indexmap::IndexMap;
 use once_cell::sync::Lazy;
@@ -21,28 +20,26 @@ use tracing::{debug, error, info, warn};
 use crate::auth::AuthResult;
 use crate::backend::replication::ShardedSchemas;
 use crate::backend::schema::SchemaCache;
-use crate::config::PoolerMode;
-use crate::frontend::PreparedStatements;
+use crate::config::{AuthType, PoolerMode};
+#[cfg(test)]
 use crate::frontend::client::query_engine::two_pc::Manager;
-use crate::frontend::router::parser::Cache;
 use crate::frontend::router::sharding::{Mapping, ShardedTable};
 use crate::{
     backend::pool::PoolConfig,
-    config::{
-        ConfigAndUsers, Role, ShardedMappingDeprecated, User as ConfigUser, config, load, set,
-    },
-    net::{messages::FrontendPid, tls},
+    config::{ConfigAndUsers, Role, ShardedMappingDeprecated, User as ConfigUser, config},
+    net::messages::FrontendPid,
 };
 
 use super::{
     Cluster, ClusterShardConfig, Error, ShardedTables,
     pool::{Address, ClusterConfig, Config},
-    reload_notify,
 };
 
-static DATABASES: Lazy<ArcSwap<Databases>> =
-    Lazy::new(|| ArcSwap::from_pointee(Databases::default()));
 static LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+fn runtime_backend_error(error: crate::runtime::Error) -> Error {
+    Error::Runtime(error.to_string())
+}
 
 /// Sync databases during modification.
 pub fn lock() -> MutexGuard<'static, RawMutex, ()> {
@@ -53,59 +50,37 @@ pub fn lock() -> MutexGuard<'static, RawMutex, ()> {
 ///
 /// This allows to access any database proxied by pgDog.
 pub fn databases() -> Arc<Databases> {
-    DATABASES.load().clone()
+    crate::runtime::live().databases()
 }
 
 /// Replace databases pooler-wide.
+#[cfg(test)]
 pub fn replace_databases(new_databases: Databases, reload: bool) -> Result<(), Error> {
-    // Order of operations is important
-    // to ensure zero downtime for clients.
-    //
-    // 1. Prevent concurrent reloads. The guard restores the ready flag and
-    //    wakes waiters on drop, even if a step below errors out.
-    let _guard = reload_notify::started();
-
-    // 2. Move connections from old databases into new ones.
-    let old_databases = databases();
-    let new_databases = Arc::new(new_databases);
-    if reload {
-        // Move whatever connections we can over to new pools.
-        old_databases.move_conns_to(&new_databases)?;
-    }
-    // 3. Launch new databases first.
-    new_databases.launch();
-    DATABASES.store(new_databases);
-    // 4. Shutdown all databases.
-    old_databases.shutdown();
-
-    Ok(())
+    crate::runtime::replace_databases(new_databases, reload)
+        .map(|_| ())
+        .map_err(runtime_backend_error)
 }
 
 /// Re-create all connections.
 pub fn reconnect() -> Result<(), Error> {
-    let config = config();
-    let databases = from_config(&config);
-    replace_databases(databases, false)?;
-    Ok(())
+    crate::runtime::reload_config((*config()).clone(), false)
+        .map(|_| ())
+        .map_err(runtime_backend_error)
 }
 
 /// Re-create databases from existing config,
 /// preserving connections.
 pub fn reload_from_existing() -> Result<(), Error> {
     let _lock = lock();
-    let config = config();
-    let databases = from_config(&config);
-    replace_databases(databases, true)?;
-    Ok(())
+    crate::runtime::reload_config((*config()).clone(), true)
+        .map(|_| ())
+        .map_err(runtime_backend_error)
 }
 
 /// Initialize the databases for the first time.
+#[cfg(test)]
 pub fn init() -> Result<(), Error> {
-    let config = config();
-    replace_databases(from_config(&config), false)?;
-
-    // Resize query cache
-    Cache::resize(config.config.general.query_cache_limit);
+    crate::runtime::reload_config((*config()).clone(), false).map_err(runtime_backend_error)?;
 
     // Start two-pc manager.
     let _monitor = Manager::get();
@@ -136,26 +111,11 @@ pub async fn cancel_all(database: &str) -> Result<(), Error> {
 pub fn reload() -> Result<(), Error> {
     info!("reloading configuration");
 
-    // Load config from disk.
     let old_config = config();
-    let new_config = load(&old_config.config_path, &old_config.users_path)?;
-    let databases = from_config(&new_config);
-
-    // Replace databases.
-    replace_databases(databases, true)?;
-
-    // Reload TLS connectors.
-    tls::reload()?;
-
-    // Remove any unused prepared statements.
-    PreparedStatements::global()
-        .write()
-        .close_unused(new_config.config.general.prepared_statements_limit);
-
-    // Resize query cache.
-    Cache::resize(new_config.config.general.query_cache_limit);
-
-    Ok(())
+    let new_config = ConfigAndUsers::load(&old_config.config_path, &old_config.users_path)?;
+    crate::runtime::reload_config(new_config, true)
+        .map(|_| ())
+        .map_err(runtime_backend_error)
 }
 
 /// Add new user to pool via passthrough authentication.
@@ -172,7 +132,7 @@ pub(crate) fn add(user: ConfigUser) -> Result<AuthResult, Error> {
         let _lock = lock();
         let mut config = (*config()).clone();
         config.users.add_or_replace(user);
-        set(config)?;
+        crate::runtime::reload_config(config, true).map_err(runtime_backend_error)?;
 
         Ok(())
     }
@@ -186,7 +146,6 @@ pub(crate) fn add(user: ConfigUser) -> Result<AuthResult, Error> {
         if existing.password.is_none() {
             existing.password = user.password.clone();
             add_user(existing)?;
-            reload_from_existing()?;
             Ok(AuthResult::Ok)
         } else if existing
             .password
@@ -202,14 +161,12 @@ pub(crate) fn add(user: ConfigUser) -> Result<AuthResult, Error> {
             // Passwords don't match but we can change it.
             existing.password = user.password.clone();
             add_user(user)?;
-            reload_from_existing()?;
             Ok(AuthResult::Ok)
         } else {
             Ok(AuthResult::NoPassthroughPasswordChange)
         }
     } else {
         add_user(user)?;
-        reload_from_existing()?;
         Ok(AuthResult::Ok)
     }
 }
@@ -229,9 +186,7 @@ pub async fn cutover(source: &str, destination: &str) -> Result<(), Error> {
         config.config.cutover(source, destination);
         config.users.cutover(source, destination);
 
-        let databases = from_config(&config);
-
-        replace_databases(databases, true)?;
+        crate::runtime::reload_config(config.clone(), true).map_err(runtime_backend_error)?;
 
         config
     };
@@ -312,6 +267,7 @@ pub struct Databases {
     databases: HashMap<User, Cluster>,
     mirrors: HashMap<User, Vec<Cluster>>,
     mirror_configs: HashMap<(String, String), crate::config::MirrorConfig>,
+    auth_type: AuthType,
 }
 
 impl Databases {
@@ -418,14 +374,20 @@ impl Databases {
     }
 
     /// Shutdown all pools.
-    fn shutdown(&self) {
+    pub(crate) fn shutdown(&self) {
         for cluster in self.all().values() {
             cluster.shutdown();
         }
     }
 
+    fn should_launch(&self, cluster: &Cluster) -> bool {
+        self.auth_type == AuthType::OAuth
+            || !cluster.passwords().is_empty()
+            || cluster.identity().is_some()
+    }
+
     /// Launch all pools.
-    fn launch(&self) {
+    pub(crate) fn launch(&self) {
         // Launch mirrors first to log mirror relationships
         for (source_user, mirror_clusters) in &self.mirrors {
             if let Some(source_cluster) = self.databases.get(source_user) {
@@ -441,7 +403,7 @@ impl Databases {
 
         // Launch all clusters
         for cluster in self.all().values() {
-            if cluster.passwords().is_empty() && cluster.identity().is_none() {
+            if !self.should_launch(cluster) {
                 warn!(
                     r#"disabling pool for user "{}" and database "{}", password not set"#,
                     cluster.user(),
@@ -775,6 +737,7 @@ pub fn from_config(config: &ConfigAndUsers) -> Databases {
         databases,
         mirrors,
         mirror_configs,
+        auth_type: config.config.general.auth_type.clone(),
     }
 }
 
@@ -784,6 +747,29 @@ mod tests {
 
     use super::*;
     use crate::config::{Config, ConfigAndUsers, Database, Role};
+
+    #[test]
+    fn oauth_user_without_frontend_password_keeps_pool_enabled() {
+        let mut config = ConfigAndUsers::default();
+        config.config.general.auth_type = AuthType::OAuth;
+        config.config.databases = vec![Database {
+            name: "db".into(),
+            host: "127.0.0.1".into(),
+            port: 5432,
+            password: Some("backend-password".into()),
+            ..Default::default()
+        }];
+        config.users.users = vec![ConfigUser {
+            name: "alice".into(),
+            database: "db".into(),
+            ..Default::default()
+        }];
+
+        let databases = from_config(&config);
+        let cluster = databases.cluster(("alice", "db")).unwrap();
+        assert!(cluster.passwords().is_empty());
+        assert!(databases.should_launch(&cluster));
+    }
 
     fn setup_config(passthrough_auth: crate::config::PassthroughAuth, users: Vec<ConfigUser>) {
         let _lock = lock();

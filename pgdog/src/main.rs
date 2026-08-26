@@ -49,6 +49,7 @@ mod frontend;
 pub mod healthcheck;
 pub mod net;
 pub mod plugin;
+pub mod runtime;
 pub mod sighup;
 pub mod state;
 pub mod stats;
@@ -115,8 +116,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Get databases from environment or from --database-url args.
     let config = if let Some(database_urls) = args.database_url {
-        config::from_urls(&database_urls)?
-    } else if let Ok(config) = config::from_env() {
+        config::from_urls(config, &database_urls)?
+    } else if let Ok(config) = config::from_env(config.clone()) {
         info!(
             "loaded {} databases from environment",
             config.config.databases.len()
@@ -126,9 +127,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config
     };
 
-    config::overrides(overrides);
-
-    plugin::load_from_config()?;
+    let config = config::overrides(config, overrides);
+    plugin::load(&config.config)?;
 
     let runtime = build_runtime(
         config.config.general.workers,
@@ -145,26 +145,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.config.general.unique_id_function
     );
 
-    runtime.block_on(async move { pgdog(args.command).await })?;
+    runtime.block_on(async move { pgdog(args.command, config).await })?;
 
     Ok(())
 }
 
-async fn pgdog(command: Option<Commands>) -> Result<(), Box<dyn std::error::Error>> {
+async fn pgdog(
+    command: Option<Commands>,
+    candidate: config::ConfigAndUsers,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Run atexit handlers on SIGTERM (e.g. llvm-cov profile flushing).
     #[cfg(unix)]
     install_sigterm_handler();
 
-    // Preload TLS. Resulting primitives
-    // are async, so doing this after Tokio launched seems prudent.
-    net::tls::load()?;
+    let state = runtime::commit_reload(runtime::prepare_reload(candidate)?, false)?;
+    let general = state.config.config.general.clone();
+    drop(state);
+    let _monitor = Manager::get();
 
-    // Load databases and connect if needed.
-    databases::init()?;
-
-    let general = &config().config.general;
-
-    install_log_throttle(general);
+    install_log_throttle(&general);
 
     if let Some(broadcast_addr) = general.broadcast_address {
         net::discovery::Listener::get().run(broadcast_addr, general.broadcast_port);

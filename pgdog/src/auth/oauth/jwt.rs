@@ -33,6 +33,7 @@ pub(super) async fn validate(
     verify(token, username, &runtime.config, &parsed, key)
 }
 
+#[cfg(test)]
 pub(super) fn validate_with_keys(
     token: &str,
     username: &str,

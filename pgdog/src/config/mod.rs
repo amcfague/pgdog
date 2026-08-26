@@ -44,30 +44,20 @@ pub use replication::MirrorConfig;
 #[cfg(test)]
 pub(crate) use replication::Mirroring;
 
-use parking_lot::Mutex;
 use std::env;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
-use once_cell::sync::Lazy;
-
-static CONFIG: Lazy<ArcSwap<ConfigAndUsers>> =
-    Lazy::new(|| ArcSwap::from_pointee(ConfigAndUsers::default()));
-
-static LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
-
 /// Load configuration.
 pub fn config() -> Arc<ConfigAndUsers> {
-    CONFIG.load().clone()
+    Arc::clone(&crate::runtime::live().config)
 }
 
-/// Load the configuration file from disk.
+/// Load and validate configuration from disk without publishing it.
 pub fn load(config: &Path, users: &Path) -> Result<ConfigAndUsers, Error> {
-    let config = ConfigAndUsers::load(config, users)?;
-    set(config)
+    prepare(ConfigAndUsers::load(config, users)?)
 }
 
-pub fn set(mut config: ConfigAndUsers) -> Result<ConfigAndUsers, Error> {
+pub fn prepare(mut config: ConfigAndUsers) -> Result<ConfigAndUsers, Error> {
     config.check()?;
     validate_lookup_queries(&config)?;
     for table in config.config.sharded_tables.iter_mut() {
@@ -75,7 +65,15 @@ pub fn set(mut config: ConfigAndUsers) -> Result<ConfigAndUsers, Error> {
         // And also moved outside the configuration to the place of
         table.load_centroids()?;
     }
-    CONFIG.store(Arc::new(config.clone()));
+    Ok(config)
+}
+
+/// Install a configuration snapshot without rebuilding dependent state.
+/// Production reload paths use `runtime::reload_config` instead.
+#[cfg(test)]
+pub fn set(config: ConfigAndUsers) -> Result<ConfigAndUsers, Error> {
+    let config = prepare(config)?;
+    crate::runtime::set_config(config.clone());
     Ok(config)
 }
 
@@ -165,19 +163,13 @@ fn validate_lookup_query(query: &str) -> Result<(), String> {
 }
 
 /// Load configuration from a list of database URLs.
-pub fn from_urls(urls: &[String]) -> Result<ConfigAndUsers, Error> {
-    let _lock = LOCK.lock();
-    let config = (*config()).clone();
-    let config = config.databases_from_urls(urls)?;
-    CONFIG.store(Arc::new(config.clone()));
-    Ok(config)
+pub fn from_urls(config: ConfigAndUsers, urls: &[String]) -> Result<ConfigAndUsers, Error> {
+    config.databases_from_urls(urls)
 }
 
 /// Extract all database URLs from the environment and
 /// create the config.
-pub fn from_env() -> Result<ConfigAndUsers, Error> {
-    let _lock = LOCK.lock();
-
+pub fn from_env(mut config: ConfigAndUsers) -> Result<ConfigAndUsers, Error> {
     let mut urls = vec![];
     let mut index = 1;
     while let Ok(url) = env::var(format!("PGDOG_DATABASE_URL_{}", index)) {
@@ -189,7 +181,6 @@ pub fn from_env() -> Result<ConfigAndUsers, Error> {
         return Err(Error::NoDbsInEnv);
     }
 
-    let mut config = (*config()).clone();
     config = config.databases_from_urls(&urls)?;
 
     // Extract mirroring configuration
@@ -204,13 +195,11 @@ pub fn from_env() -> Result<ConfigAndUsers, Error> {
         config = config.mirroring_from_strings(&mirror_strs)?;
     }
 
-    CONFIG.store(Arc::new(config.clone()));
     Ok(config)
 }
 
 /// Override some settings.
-pub fn overrides(overrides: Overrides) {
-    let mut config = (*config()).clone();
+pub fn overrides(mut config: ConfigAndUsers, overrides: Overrides) -> ConfigAndUsers {
     let Overrides {
         default_pool_size,
         min_pool_size,
@@ -233,7 +222,7 @@ pub fn overrides(overrides: Overrides) {
         };
     }
 
-    CONFIG.store(Arc::new(config));
+    config
 }
 
 // Test helper functions

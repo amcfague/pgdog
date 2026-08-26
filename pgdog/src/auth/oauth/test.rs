@@ -45,7 +45,7 @@ fn config(mode: OAuthMode) -> OAuth {
     }
 }
 
-fn jwt_material() -> (EncodingKey, JwkSet) {
+pub(crate) fn jwt_material() -> (EncodingKey, JwkSet) {
     let key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
     let pair = Ed25519KeyPair::from_pkcs8(key.as_ref()).unwrap();
     let encoding = EncodingKey::from_ed_der(key.as_ref());
@@ -62,7 +62,7 @@ fn jwt_material() -> (EncodingKey, JwkSet) {
     (encoding, JwkSet { keys: vec![jwk] })
 }
 
-fn jwt_token(key: &EncodingKey, typ: &str, subject: &str, issuer: &str) -> String {
+pub(crate) fn jwt_token(key: &EncodingKey, typ: &str, subject: &str, issuer: &str) -> String {
     jwt_token_with_kid(key, typ, subject, issuer, "key-1")
 }
 
@@ -94,8 +94,8 @@ fn jwt_token_with_kid(
     .unwrap()
 }
 
-struct MockIdp {
-    issuer: String,
+pub(crate) struct MockIdp {
+    pub(crate) issuer: String,
     jwks: String,
     metadata_requests: AtomicUsize,
     jwks_requests: AtomicUsize,
@@ -182,7 +182,7 @@ impl MockIdp {
     }
 }
 
-async fn mock_idp(
+pub(crate) async fn mock_idp(
     jwks: &JwkSet,
 ) -> (
     Arc<MockIdp>,
